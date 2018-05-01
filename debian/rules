@@ -1,0 +1,70 @@
+#!/usr/bin/make -f
+
+include /usr/share/dpkg/default.mk
+
+# from fred/src/freenet/node/Version.java
+FREENET_VERSION := 0.7.5
+# lazy evaluation
+VCS_EXT_VER      = $(shell cd contrib && git describe --always --abbrev=4 | sed 's/^v//')
+VCS_FRED_VER     = $(shell cd fred && git describe --always --abbrev=4)
+VCS_VERSION      = $(FREENET_VERSION)+$(VCS_FRED_VER)+ext$(VCS_EXT_VER)
+
+ANT_EXT         := cd $(CURDIR)/contrib/freenet-ext/ && ant -propertyfile $(CURDIR)/debian/contrib.override.properties
+ANT_FRED        := cd $(CURDIR)/fred/ && ant -propertyfile $(CURDIR)/debian/freenet.override.properties -f build-clean.xml
+WRAPPER_INIT    := /usr/share/wrapper/make-wrapper-init.sh
+
+%:
+	dh $@ --with javahelper
+
+override_dh_auto_build:
+	# wrapper service sh
+	sed -e 's/@version@/$(FREENET_VERSION)/' $(CURDIR)/debian/freenet-daemon.service.params | \
+	  $(WRAPPER_INIT) -q > "$(CURDIR)/debian/freenet-daemon.init"
+	# jar packages
+	$(ANT_EXT) package
+	$(ANT_FRED) package-only
+
+override_dh_auto_test:
+	$(ANT_FRED) unit
+
+override_dh_auto_install:
+	# jar packages
+	install -m 644 -t $(CURDIR)/debian/freenet-daemon/usr/share/java/freenet \
+	  $(CURDIR)/contrib/freenet-ext/dist/*.jar
+	install -m 644 -t $(CURDIR)/debian/freenet-daemon/usr/share/java \
+	  $(CURDIR)/fred/dist/freenet.jar
+	#install -m 644 -t $(CURDIR)/debian/freenet-daemon/usr/lib/java/freenet \
+	#  $(CURDIR)/contrib/freenet-ext/dist/freenet-ext_native.jar
+
+override_dh_auto_clean:
+	# jar packages
+	# TODO: when GWT re-enters Debian: use "clean-all" here instead.
+	$(ANT_FRED) clean clean-doc
+	$(ANT_EXT) clean-all
+	# wrapper service sh
+	rm -f $(CURDIR)/debian/freenet-daemon.init
+	# downloaded libs
+	rm -rf $(CURDIR)/contrib/freenet-ext/lib/*
+
+get-seednodes:
+	wget -N https://downloads.freenetproject.org/alpha/opennet/seednodes.fref -O debian/seednodes.fref
+
+vcs-print-version:
+	@echo $(VCS_VERSION)
+
+vcs-init:
+	git submodule update --init
+
+vcs-update:
+	for path in contrib fred; do cd "$$path" && git checkout master && git pull origin && cd -; done
+
+vcs-clean:
+	for path in contrib fred; do cd "$$path" && git reset --hard HEAD && git clean -fdx && cd -; done
+
+vcs-mk-origtargz:
+	test ! -f ../$(DEB_SOURCE)_$(VCS_VERSION).orig.tar.xz
+	tar -cJ --exclude-vcs --xform 's,^\./,$(DEB_SOURCE)/,' \
+	  -f ../$(DEB_SOURCE)_$(VCS_VERSION).orig.tar.xz --exclude=debian --exclude=.gitmodules .
+
+vcs-update-origtargz: vcs-init vcs-clean vcs-update vcs-mk-origtargz
+	dch -v $(VCS_VERSION)-1 "New upstream release."
